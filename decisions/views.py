@@ -4,6 +4,7 @@ from selenium.webdriver import ChromeOptions
 from django.http import HttpResponse
 from bets_tracker.settings import BET365_API_TOKEN
 import undetected_chromedriver.v2 as uc
+import pandas as pd
 import requests
 import time
 import json
@@ -9953,6 +9954,20 @@ def get_decisions(request):
     # upcoming_events_response = requests.get(upcoming_events_request_url, params=upcoming_events_request_params)
     # events = upcoming_events_response.json()['results']
 
+    driver_options = ChromeOptions()
+    driver_options.page_load_strategy = 'eager'
+    driver = uc.Chrome(driver_options)
+    driver.get('https://www.fantasypros.com/daily-fantasy/nba/defense-vs-position.php')
+    defense_position_table_pts_column = driver.find_element(By.XPATH, '//*[@id="data-table"]/thead/tr/th[2]/div')
+    defense_position_table_pts_column.click()
+    defense_position_table_pts_column.click()
+    defense_position_table = driver.find_element(By.XPATH, '//*[@id="data-table"]')
+    defense_position_table_content = defense_position_table.get_attribute('outerHTML')
+    defense_position_table_df = pd.read_html(defense_position_table_content)[0]
+    defense_position_table_team_points_columns = defense_position_table_df[['Team', 'PTS']]
+
+    driver.get('https://statmuse.com/nba')
+
     for event in events:
         decision ={
             'event_id': event['id'],
@@ -9971,28 +9986,36 @@ def get_decisions(request):
 
         for odd in player_points_odds:
             if odd['header'] == 'Over':
+                search_input = driver.find_element(By.NAME, 'question[query]')
+                search_input.send_keys(odd['name'])
+                search_input.send_keys(Keys.ENTER)
+
+                time.sleep(2)
+
+                next_game_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[2]/div[2]/table')
+                next_game_table_content = next_game_table_node.get_attribute('outerHTML')
+                next_game_table_df = pd.read_html(next_game_table_content)[0]
+                player_last_five_games_points_per_game = next_game_table_df['PPG'][0]
+                home_away_points_per_game = next_game_table_df['PPG'][1]
+                stats_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[3]/div[2]/table')
+                stats_table_content = stats_table_node.get_attribute('outerHTML')
+                stats_table_df = pd.read_html(stats_table_content)[0]
+                player_current_season_points_per_game = stats_table_df['PPG'][0]
+                opponent_team_name = event['home']['name'] if odd['name2'] == event['away']['name'] else event['away']['name']
+
                 location_key = 'home_average' if odd['name2'] == event['home']['name'] else 'away' + '_average'
                 decision['entries'].append({
                     'player': odd['name'],
                     'market': 'Over Points',
                     'line': odd['handicap'],
-                    '2022-23_average': 0,
-                    location_key: 0,
-                    'last_5_games_average': 0,
+                    '2022-23_average': player_current_season_points_per_game,
+                    location_key: home_away_points_per_game,
+                    'last_5_games_average': player_last_five_games_points_per_game,
                     'bet': 0.75
                 })
         
         decisions.append(decision)
 
-    # driver = uc.Chrome()
-    # driver.get('https://statmuse.com/nba')
-
-    # search_input = driver.find_element(By.NAME, 'question[query]')
-
-    # search_input.send_keys('Stephen Curry')
-    # search_input.send_keys(Keys.ENTER)
-
-    # time.sleep(2)
-    # driver.quit()
+    driver.quit()
 
     return HttpResponse(json.dumps(decisions))
