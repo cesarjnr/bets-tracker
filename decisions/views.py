@@ -9964,16 +9964,21 @@ def get_decisions(request):
 
         for odd in player_points_odds:
             if odd['header'] == 'Over':
+                opponent_team = event['home']['name'] if odd['name2'] == event['away']['name'] else event['away']['name']
+                opponent_team_last_name = opponent_team.split()[-1]
                 player_stats = get_player_stats(driver, stat_muse_window_id, odd, event)
-                location = list(player_stats.keys())[2]
+                opponent_conceded_points = get_opponent_conceded_points_by_position(driver, fantasy_pros_window_id, player_stats['position'], opponent_team_last_name)
+                location = list(player_stats.keys())[3]
 
                 decision['entries'].append({
                     'player': odd['name'],
+                    'position': player_stats['position'],
                     'market': 'Over Points',
                     'line': odd['handicap'],
                     'current_season': player_stats['current_season'],
                     location: player_stats[location],
                     'last_five_games': player_stats['last_five_games'],
+                    (opponent_team_last_name + ' concedes'): opponent_conceded_points,
                     'bet': 0.75
                 })
         
@@ -10041,30 +10046,37 @@ def get_player_stats(driver, stat_muse_window_id, odd, event):
 
     time.sleep(5)
 
-    stats_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[3]/div[2]/table')
-    stats_table_content = stats_table_node.get_attribute('outerHTML')
+    stats_table_element = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[3]/div[2]/table')
+    stats_table_content = stats_table_element.get_attribute('outerHTML')
     stats_table_df = pd.read_html(stats_table_content)[0]
     player_current_season_points_per_game = stats_table_df['PPG'][0]
 
-    next_game_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[2]/div[2]/table')
-    next_game_table_content = next_game_table_node.get_attribute('outerHTML')
+    next_game_table_element = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[2]/div[2]/table')
+    next_game_table_content = next_game_table_element.get_attribute('outerHTML')
     next_game_table_df = pd.read_html(next_game_table_content)[0]
     player_last_five_games_points_per_game = next_game_table_df['PPG'][0]
     home_away_points_per_game = next_game_table_df['PPG'][2] if len(next_game_table_df) > 2 else next_game_table_df['PPG'][1]
+    player_number_position_element = driver.find_element(By.XPATH, '/html/body/div[3]/div/div[1]/div[2]/span[4]')
+    player_position = player_number_position_element.text[-2:]
     location = 'home' if odd['name2'] == event['home']['name'] else 'away'
 
     return {
         'current_season': player_current_season_points_per_game,
         'last_five_games': player_last_five_games_points_per_game,
-        location: home_away_points_per_game,
+        'position': player_position,
+        location: home_away_points_per_game
     }
 
-def get_opponent_conceded_points_by_position(driver):
-    defense_position_table_pts_column = driver.find_element(By.XPATH, '//*[@id="data-table"]/thead/tr/th[2]/div')
-    defense_position_table_pts_column.click()
-    defense_position_table_pts_column.click()
-    defense_position_table = driver.find_element(By.XPATH, '//*[@id="data-table"]')
-    defense_position_table_content = defense_position_table.get_attribute('outerHTML')
-    defense_position_table_df = pd.read_html(defense_position_table_content)[0]
-    defense_position_table_team_points_columns = defense_position_table_df[['Team', 'PTS']]
-    opponent_team_name = event['home']['name'] if odd['name2'] == event['away']['name'] else event['away']['name']
+def get_opponent_conceded_points_by_position(driver, fantasy_pros_window_id, player_position, opponent_team):
+    driver.switch_to.window(fantasy_pros_window_id)
+
+    position_link_element = driver.find_element(By.LINK_TEXT, player_position)
+
+    position_link_element.click()
+
+    matchup_table_element = driver.find_element(By.XPATH, '//*[@id="data-table"]')
+    matchup_table_content = matchup_table_element.get_attribute('outerHTML')
+    matchup_table_df = pd.read_html(matchup_table_content)[0]
+    conceded_points = matchup_table_df[matchup_table_df['Team'].str.contains(opponent_team)]['PTS'].to_list()
+
+    return conceded_points[0]
