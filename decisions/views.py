@@ -1,5 +1,6 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.window import WindowTypes
 from selenium.webdriver import ChromeOptions
 from django.http import HttpResponse
 from bets_tracker.settings import BET365_API_TOKEN
@@ -8,6 +9,8 @@ import pandas as pd
 import requests
 import time
 import json
+
+BET365_API_BASE_PATH = 'https://api.b365api.com'
 
 events = [
     {
@@ -9941,10 +9944,70 @@ odds = {
 
 def get_decisions(request):
     decisions = []
-    bet365_api_base_path = 'https://api.b365api.com'
+
+    window = setup_chrome_window()
+    driver = window['driver']
+    stat_muse_window_id = window['stat_muse_window_id']
+    fantasy_pros_window_id = window['fantasy_pros_window_id']
+
+    events = get_upcoming_events()
+
+    for event in events:
+        decision ={
+            'event_id': event['id'],
+            'home_team': event['home']['name'],
+            'away_team': event['away']['name'],
+            'entries': []
+        }
+        odds = get_prematch_odds(event)
+        player_points_odds = odds['player_props']['sp']['player_points']['odds']
+
+        for odd in player_points_odds:
+            if odd['header'] == 'Over':
+                player_stats = get_player_stats(driver, stat_muse_window_id, odd, event)
+                location = list(player_stats.keys())[2]
+
+                decision['entries'].append({
+                    'player': odd['name'],
+                    'market': 'Over Points',
+                    'line': odd['handicap'],
+                    'current_season': player_stats['current_season'],
+                    location: player_stats[location],
+                    'last_five_games': player_stats['last_five_games'],
+                    'bet': 0.75
+                })
+        
+        decisions.append(decision)
+
+    driver.quit()
+
+    return HttpResponse(json.dumps(decisions))
+
+def setup_chrome_window():
+    driver_options = ChromeOptions()
+    driver_options.page_load_strategy = 'eager'
+    driver_options.add_argument("--start-maximized")
+    driver = uc.Chrome(driver_options)
+
+    driver.get('https://statmuse.com/nba')
+
+    stat_muse_window_id = driver.current_window_handle
+
+    driver.switch_to.new_window(WindowTypes.TAB)
+    driver.get('https://www.fantasypros.com/daily-fantasy/nba/defense-vs-position.php')
+
+    fantasy_pros_window_id = driver.current_window_handle
+
+    return {
+        'driver': driver,
+        'stat_muse_window_id': stat_muse_window_id,
+        'fantasy_pros_window_id': fantasy_pros_window_id
+    }
+
+def get_upcoming_events():
     basketball_sport_id = 18
     nba_league_id = 10041830
-    upcoming_events_request_url = bet365_api_base_path + '/v1/bet365/upcoming'
+    upcoming_events_request_url = BET365_API_BASE_PATH + '/v1/bet365/upcoming'
     upcoming_events_request_params = {
         'token': BET365_API_TOKEN,
         'sport_id': basketball_sport_id,
@@ -9954,10 +10017,49 @@ def get_decisions(request):
     # upcoming_events_response = requests.get(upcoming_events_request_url, params=upcoming_events_request_params)
     # events = upcoming_events_response.json()['results']
 
-    driver_options = ChromeOptions()
-    driver_options.page_load_strategy = 'eager'
-    driver = uc.Chrome(driver_options)
-    driver.get('https://www.fantasypros.com/daily-fantasy/nba/defense-vs-position.php')
+    return events
+
+def get_prematch_odds(event):
+    prematch_odds_request_url = BET365_API_BASE_PATH + '/v3/bet365/prematch'
+    prematch_odds_request_params = {
+        'token': BET365_API_TOKEN,
+        'FI': event['id']
+    }
+    # prematch_odds_response = requests.get(prematch_odds_request_url, params=prematch_odds_request_params)
+    # odds = prematch_odds_response.json()['results'][0]
+
+    return odds
+
+def get_player_stats(driver, stat_muse_window_id, odd, event):
+    driver.switch_to.window(stat_muse_window_id)
+    search_input = driver.find_element(By.NAME, 'question[query]')
+
+    search_input.send_keys(Keys.CONTROL + 'a')
+    search_input.send_keys(Keys.DELETE)
+    search_input.send_keys(odd['name'])
+    search_input.send_keys(Keys.ENTER)
+
+    time.sleep(5)
+
+    stats_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[3]/div[2]/table')
+    stats_table_content = stats_table_node.get_attribute('outerHTML')
+    stats_table_df = pd.read_html(stats_table_content)[0]
+    player_current_season_points_per_game = stats_table_df['PPG'][0]
+
+    next_game_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[2]/div[2]/table')
+    next_game_table_content = next_game_table_node.get_attribute('outerHTML')
+    next_game_table_df = pd.read_html(next_game_table_content)[0]
+    player_last_five_games_points_per_game = next_game_table_df['PPG'][0]
+    home_away_points_per_game = next_game_table_df['PPG'][2] if len(next_game_table_df) > 2 else next_game_table_df['PPG'][1]
+    location = 'home' if odd['name2'] == event['home']['name'] else 'away'
+
+    return {
+        'current_season': player_current_season_points_per_game,
+        'last_five_games': player_last_five_games_points_per_game,
+        location: home_away_points_per_game,
+    }
+
+def get_opponent_conceded_points_by_position(driver):
     defense_position_table_pts_column = driver.find_element(By.XPATH, '//*[@id="data-table"]/thead/tr/th[2]/div')
     defense_position_table_pts_column.click()
     defense_position_table_pts_column.click()
@@ -9965,57 +10067,4 @@ def get_decisions(request):
     defense_position_table_content = defense_position_table.get_attribute('outerHTML')
     defense_position_table_df = pd.read_html(defense_position_table_content)[0]
     defense_position_table_team_points_columns = defense_position_table_df[['Team', 'PTS']]
-
-    driver.get('https://statmuse.com/nba')
-
-    for event in events:
-        decision ={
-            'event_id': event['id'],
-            'home_team': event['home']['name'],
-            'away_team': event['away']['name'],
-            'entries': []
-        }
-        prematch_odds_request_url = bet365_api_base_path + '/v3/bet365/prematch'
-        prematch_odds_request_params = {
-            'token': BET365_API_TOKEN,
-            'FI': event['id']
-        }
-        # prematch_odds_response = requests.get(prematch_odds_request_url, params=prematch_odds_request_params)
-        # odds = prematch_odds_response.json()['results'][0]
-        player_points_odds = odds['player_props']['sp']['player_points']['odds']
-
-        for odd in player_points_odds:
-            if odd['header'] == 'Over':
-                search_input = driver.find_element(By.NAME, 'question[query]')
-                search_input.send_keys(odd['name'])
-                search_input.send_keys(Keys.ENTER)
-
-                time.sleep(2)
-
-                next_game_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[2]/div[2]/table')
-                next_game_table_content = next_game_table_node.get_attribute('outerHTML')
-                next_game_table_df = pd.read_html(next_game_table_content)[0]
-                player_last_five_games_points_per_game = next_game_table_df['PPG'][0]
-                home_away_points_per_game = next_game_table_df['PPG'][1]
-                stats_table_node = driver.find_element(By.XPATH, '/html/body/div[6]/player-profile/div/div[2]/div[3]/div[2]/table')
-                stats_table_content = stats_table_node.get_attribute('outerHTML')
-                stats_table_df = pd.read_html(stats_table_content)[0]
-                player_current_season_points_per_game = stats_table_df['PPG'][0]
-                opponent_team_name = event['home']['name'] if odd['name2'] == event['away']['name'] else event['away']['name']
-
-                location_key = 'home_average' if odd['name2'] == event['home']['name'] else 'away' + '_average'
-                decision['entries'].append({
-                    'player': odd['name'],
-                    'market': 'Over Points',
-                    'line': odd['handicap'],
-                    '2022-23_average': player_current_season_points_per_game,
-                    location_key: home_away_points_per_game,
-                    'last_5_games_average': player_last_five_games_points_per_game,
-                    'bet': 0.75
-                })
-        
-        decisions.append(decision)
-
-    driver.quit()
-
-    return HttpResponse(json.dumps(decisions))
+    opponent_team_name = event['home']['name'] if odd['name2'] == event['away']['name'] else event['away']['name']
