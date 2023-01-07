@@ -9978,7 +9978,7 @@ def get_decisions(request):
                     'current_season': player_stats['current_season'],
                     location: player_stats[location],
                     'last_five_games': player_stats['last_five_games'],
-                    (opponent_team_last_name + ' concedes'): opponent_conceded_points,
+                    (opponent_team_last_name.lower() + '_concedes'): opponent_conceded_points,
                     'bet': 0.75
                 })
         
@@ -10080,3 +10080,17 @@ def get_opponent_conceded_points_by_position(driver, fantasy_pros_window_id, pla
     conceded_points = matchup_table_df[matchup_table_df['Team'].str.contains(opponent_team)]['PTS'].to_list()
 
     return conceded_points[0]
+
+def calculate_bet_value(player_stats, line, opponent_conceded_points, bank_value):
+    number_of_stats_below_line = 0
+    location_key = list(player_stats.keys())[3]
+    stats_to_be_used = {
+        'current_season': player_stats['current_season'],
+        'last_five_games': player_stats['last_five_games'],
+        'opponent_conceded_points': opponent_conceded_points,
+        [location_key]: player_stats[location_key]
+    }
+
+    for stat in stats_to_be_used:
+        if stats_to_be_used[stat] < (float(line) + 0.5):
+            number_of_stats_below_line += 1
